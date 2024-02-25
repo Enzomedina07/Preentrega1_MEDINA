@@ -1,121 +1,106 @@
 const express = require('express');
-const fs = require('fs');
-const { v4: uuidv4 } = require('uuid'); // Importa la función uuidv4 desde la librería uuid
-
 const router = express.Router();
+const Product = require('../models/product'); // Importa el modelo de producto
 
-const PRODUCTS_FILE_PATH = './src/data/products.json';
+// Middleware para parsear JSON
+router.use(express.json());
 
-// Función para leer productos desde el archivo
-const readProductsFromFile = (callback) => {
-  fs.readFile(PRODUCTS_FILE_PATH, 'utf8', (err, data) => {
-    if (err) {
-      console.error(err);
-      callback([]);
-    } else {
-      callback(JSON.parse(data));
+// Ruta GET / para obtener productos
+router.get('/', async (req, res) => {
+  try {
+      const { limit = 10, page = 1, sort, query } = req.query;
+      // Construir el objeto de opciones de búsqueda
+      const options = {
+          limit: parseInt(limit),
+          page: parseInt(page),
+          sort: sort ? { price: sort === 'asc' ? 1 : -1 } : null
+      };
+      // Construir el objeto de consulta
+      const filter = query ? { category: query } : {};
+      // Realizar la búsqueda de productos con paginación
+      const products = await Product.paginate(filter, options);
+      // Construir el objeto de respuesta según el formato requerido
+      const totalPages = Math.ceil(products.total / limit);
+      const prevPage = page > 1 ? page - 1 : null;
+      const nextPage = page < totalPages ? page + 1 : null;
+      const hasPrevPage = prevPage !== null;
+      const hasNextPage = nextPage !== null;
+      const prevLink = hasPrevPage ? `/api/products?page=${prevPage}&limit=${limit}` : null;
+      const nextLink = hasNextPage ? `/api/products?page=${nextPage}&limit=${limit}` : null;
+      const response = {
+          status: 'success',
+          payload: products.docs,
+          totalPages,
+          prevPage,
+          nextPage,
+          page,
+          hasPrevPage,
+          hasNextPage,
+          prevLink,
+          nextLink
+      };
+
+      res.json(response);
+  } catch (error) {
+      console.error('Error al obtener productos:', error);
+      res.status(500).json({ status: 'error', message: 'Error al obtener productos' });
+  }
+});
+
+// Ruta POST / para crear un nuevo producto
+router.post('/', async (req, res) => {
+  try {
+      const newProduct = await Product.create(req.body);
+      res.status(201).json({ status: 'success', data: newProduct });
+  } catch (error) {
+      console.error('Error al crear producto:', error);
+      res.status(500).json({ status: 'error', message: 'Error al crear producto' });
+  }
+});
+
+// Ruta DELETE /:id para eliminar un producto por ID
+router.delete('/:id', async (req, res) => {
+  try {
+      const deletedProduct = await Product.findByIdAndDelete(req.params.id);
+      if (!deletedProduct) {
+          return res.status(404).json({ status: 'error', message: 'Producto no encontrado' });
+      }
+      res.status(200).json({ status: 'success', message: 'Producto eliminado correctamente' });
+  } catch (error) {
+      console.error('Error al eliminar producto:', error);
+      res.status(500).json({ status: 'error', message: 'Error al eliminar producto' });
+  }
+});
+
+// Ruta PUT /:id para actualizar un producto por ID
+router.put('/:id', async (req, res) => {
+  try {
+      const updatedProduct = await Product.findByIdAndUpdate(req.params.id, req.body, { new: true });
+      if (!updatedProduct) {
+          return res.status(404).json({ status: 'error', message: 'Producto no encontrado' });
+      }
+      res.status(200).json({ status: 'success', data: updatedProduct });
+  } catch (error) {
+      console.error('Error al actualizar producto:', error);
+      res.status(500).json({ status: 'error', message: 'Error al actualizar producto' });
+  }
+});
+// Ruta POST /add-to-cart para agregar un producto al carrito
+router.post('/add-to-cart', async (req, res) => {
+  const { productId, cartId } = req.body;
+  try {
+    const cart = await fetchCart(cartId); // Obtener el carrito
+    if (!cart) {
+      return res.status(404).json({ error: 'Carrito no encontrado' });
     }
-  });
-};
-
-// Función para escribir productos en el archivo
-const writeProductsToFile = (products, callback) => {
-  fs.writeFile(PRODUCTS_FILE_PATH, JSON.stringify(products, null, 2), 'utf8', (err) => {
-    if (err) {
-      console.error(err);
-      callback(false);
-    } else {
-      callback(true);
-    }
-  });
-};
-
-// Ruta para obtener todos los productos
-router.get('/', (req, res) => {
-  readProductsFromFile((products) => {
-    res.json(products);
-  });
+    // Agregar el producto al carrito
+    cart.products.push(productId);
+    await updateCart(cartId, cart); // Actualizar el carrito
+    res.json({ message: 'Producto agregado al carrito correctamente' });
+  } catch (error) {
+    console.error('Error al agregar el producto al carrito:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
 });
-
-// Ruta para obtener un producto por ID
-router.get('/:pid', (req, res) => {
-  const productId = req.params.pid;
-  readProductsFromFile((products) => {
-    const product = products.find((p) => p.id === productId);
-    if (product) {
-      res.json(product);
-    } else {
-      res.status(404).json({ message: 'Producto no encontrado' });
-    }
-  });
-});
-
-// Ruta para agregar un nuevo producto
-router.post('/', (req, res) => {
-  const newProductData = req.body;
-  const newProduct = {
-    id: uuidv4(), // Genera un nuevo ID utilizando uuidv4
-    ...newProductData,
-  };
-
-  readProductsFromFile((products) => {
-    const updatedProducts = [...products, newProduct];
-    writeProductsToFile(updatedProducts, (success) => {
-      if (success) {
-        res.status(201).json(newProduct);
-      } else {
-        res.status(500).json({ message: 'Error al agregar el producto' });
-      }
-    });
-  });
-});
-
-// Ruta para actualizar un producto por ID
-router.put('/:pid', (req, res) => {
-  const productId = req.params.pid;
-  const updatedProductData = req.body;
-
-  readProductsFromFile((products) => {
-    const updatedProducts = products.map((product) => {
-      if (product.id === productId) {
-        product.title = updatedProductData.title;
-        product.description = updatedProductData.description;
-        product.code = updatedProductData.code;
-        product.price = updatedProductData.price;
-        product.status = updatedProductData.status;
-        product.stock = updatedProductData.stock;
-        product.category = updatedProductData.category;
-        product.thumbnails = updatedProductData.thumbnails;
-      }
-      return product;
-    });
-
-    writeProductsToFile(updatedProducts, (success) => {
-      if (success) {
-        res.status(200).json({ message: 'Producto actualizado correctamente' });
-      } else {
-        res.status(500).json({ message: 'Error al actualizar el producto' });
-      }
-    });
-  });
-});
-
-// Ruta para eliminar un producto por ID
-router.delete('/:pid', (req, res) => {
-  const productId = req.params.pid;
-
-  readProductsFromFile((products) => {
-    const updatedProducts = products.filter((product) => product.id !== productId);
-
-    writeProductsToFile(updatedProducts, (success) => {
-      if (success) {
-        res.status(200).json({ message: 'Producto eliminado correctamente' });
-      } else {
-        res.status(500).json({ message: 'Error al eliminar el producto' });
-      }
-    });
-  });
-});
-
-module.exports = router; // Exporta el router como middleware
+module.exports = router;
 
